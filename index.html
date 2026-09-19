@@ -416,7 +416,6 @@
 </style>
 </head>
 <body>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.0.4/tesseract.min.js"></script>
 
 <div class="page active" id="page-main">
 <header>
@@ -460,7 +459,7 @@
   <div class="drop-zone" id="drop-zone">
     <input type="file" id="file-input" accept="image/*" multiple>
     <div class="drop-icon">📷</div>
-    <div class="drop-text">拍照上傳，<strong>AI 自動辨識</strong>並裁切 1:1</div>
+    <div class="drop-text">拍照上傳，<strong>自動裁切 1:1</strong>，手動輸入號碼</div>
   </div>
 </div>
 
@@ -813,37 +812,81 @@ async function processImage(file) {
 
   resultCard.classList.remove('active');
   processing.classList.add('active');
-  procText.textContent = '辨識中...';
+  procText.textContent = '裁切中...';
 
   const imgUrl = URL.createObjectURL(file);
   const base64 = await toBase64(file);
   const hash = await imageHash(base64);
 
   try {
-    procText.textContent = '讀取車牌文字...';
-
-    const { data: { text } } = await Tesseract.recognize(file, 'eng', {
-      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
-    });
-
-    // Extract 4-digit number from OCR text
-    // Taiwan plates: ABC-1234 or AB-1234 format, take last 4 digits
-    const clean = text.replace(/[\s\-\.]/g, '').toUpperCase();
-    const numMatch = clean.match(/\d{4}/g);
-    const plate = numMatch ? numMatch[numMatch.length - 1] : null;
-
+    // Auto crop to 1:1 centered
+    const croppedUrl = await cropCenter(imgUrl);
     processing.classList.remove('active');
-
-    if (plate) {
-      showResult(imgUrl, { found: true, plate }, hash);
-    } else {
-      showResult(imgUrl, { found: false, error: '找不到車牌號碼，請手動輸入' }, hash);
-    }
-
+    showCropResult(croppedUrl, hash);
   } catch(err) {
     processing.classList.remove('active');
-    showResult(imgUrl, { found: false, error: '辨識失敗，請手動輸入' }, hash);
+    showCropResult(imgUrl, hash);
   }
+}
+
+function cropCenter(imgUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const iw = img.naturalWidth, ih = img.naturalHeight;
+      const side = Math.min(iw, ih);
+      const sx = (iw - side) / 2;
+      const sy = (ih - side) / 2;
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 1000;
+      canvas.getContext('2d').drawImage(img, sx, sy, side, side, 0, 0, 1000, 1000);
+      resolve(canvas.toDataURL('image/jpeg', 0.92));
+    };
+    img.onerror = reject;
+    img.src = imgUrl;
+  });
+}
+
+function showCropResult(croppedUrl, hash) {
+  const card = document.getElementById('result-card');
+  document.getElementById('result-img').src = croppedUrl;
+  document.getElementById('error-msg').textContent = '';
+  document.getElementById('rarity-badge-el').innerHTML = '';
+  document.getElementById('plate-number').textContent = '?';
+  document.getElementById('result-status').className = 'result-status';
+  document.getElementById('result-status').textContent = '請輸入車牌號碼';
+
+  pendingImgUrl = croppedUrl;
+  pendingHash = hash;
+  pendingPlate = null;
+
+  document.getElementById('result-actions').innerHTML = `
+    <input class="plate-input" id="crop-input" type="text" maxlength="4" placeholder="0000" inputmode="numeric" style="width:100px;font-size:16px;padding:6px 10px">
+    <button class="btn btn-primary" onclick="confirmCropAdd()">加入</button>
+    <button class="btn btn-ghost" onclick="downloadCropDirect()">下載</button>
+    <button class="btn btn-ghost" onclick="closeResult()">取消</button>
+  `;
+  card.classList.add('active');
+  setTimeout(() => document.getElementById('crop-input')?.focus(), 100);
+}
+
+function confirmCropAdd() {
+  const val = document.getElementById('crop-input')?.value.trim();
+  if (!val) return;
+  const norm = val.padStart(4,'0');
+  if (!/^\d{4}$/.test(norm)) { showToast('需要4位數字'); return; }
+  pendingPlate = norm;
+  addPlate(norm, pendingHash, pendingImgUrl);
+  closeResult();
+}
+
+function downloadCropDirect() {
+  if (!pendingImgUrl) return;
+  const val = document.getElementById('crop-input')?.value.trim() || 'plate';
+  const a = document.createElement('a');
+  a.href = pendingImgUrl;
+  a.download = `plate_${val}.jpg`;
+  a.click();
 }
 
 function cropToSquare(imgUrl, box) {
